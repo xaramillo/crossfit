@@ -56,20 +56,29 @@ BENCHMARK_WORKOUTS = [
 def load_data(filename):
     """Load data from JSON file"""
     if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            return json.load(f)
+        try:
+            with open(filename, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            st.error(f"Error loading data from {filename}: {e}")
+            return []
     return []
 
 def save_data(data, filename):
     """Save data to JSON file"""
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=2)
+    except IOError as e:
+        st.error(f"Error saving data to {filename}: {e}")
 
 def add_weightlift_pr(movement, weight, unit, notes=""):
     """Add a new weightlift PR"""
     data = load_data(WEIGHTLIFTS_DATA_FILE)
+    # Use max ID + 1 to avoid duplicate IDs
+    max_id = max([entry.get("id", 0) for entry in data], default=0)
     entry = {
-        "id": len(data) + 1,
+        "id": max_id + 1,
         "movement": movement,
         "weight": weight,
         "unit": unit,
@@ -83,8 +92,10 @@ def add_weightlift_pr(movement, weight, unit, notes=""):
 def add_benchmark_pr(workout, time_minutes, time_seconds, rounds, reps, notes=""):
     """Add a new benchmark PR"""
     data = load_data(BENCHMARKS_DATA_FILE)
+    # Use max ID + 1 to avoid duplicate IDs
+    max_id = max([entry.get("id", 0) for entry in data], default=0)
     entry = {
-        "id": len(data) + 1,
+        "id": max_id + 1,
         "workout": workout,
         "time_minutes": time_minutes,
         "time_seconds": time_seconds,
@@ -428,32 +439,44 @@ with tab4:
             df["total_seconds"] = df["time_minutes"] * 60 + df["time_seconds"]
             df = df.sort_values("date")
             
-            # Create line chart
-            fig = px.line(
-                df,
-                x="date",
-                y="total_seconds",
-                title=f"{workout_for_chart} Progress Over Time",
-                markers=True,
-                labels={"total_seconds": "Time (seconds)", "date": "Date"}
-            )
+            # Validate data
+            if df["total_seconds"].isna().any():
+                st.warning("Some entries have invalid time data")
+                df = df.dropna(subset=["total_seconds"])
             
-            # Invert y-axis since lower time is better
-            fig.update_yaxes(autorange="reversed")
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Show statistics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                best = df.loc[df["total_seconds"].idxmin()]
-                st.metric("Best Time", f"{int(best['time_minutes'])}:{int(best['time_seconds']):02d}")
-            with col2:
-                first = df.iloc[0]
-                st.metric("First Attempt", f"{int(first['time_minutes'])}:{int(first['time_seconds']):02d}")
-            with col3:
-                improvement = df.iloc[0]['total_seconds'] - df.iloc[-1]['total_seconds']
-                st.metric("Time Saved", f"-{int(improvement)}s")
+            if len(df) == 0:
+                st.info(f"No valid data for {workout_for_chart}")
+            else:
+                # Create line chart
+                fig = px.line(
+                    df,
+                    x="date",
+                    y="total_seconds",
+                    title=f"{workout_for_chart} Progress Over Time",
+                    markers=True,
+                    labels={"total_seconds": "Time (seconds)", "date": "Date"}
+                )
+                
+                # Invert y-axis since lower time is better
+                fig.update_yaxes(autorange="reversed")
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show statistics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    best_idx = df["total_seconds"].idxmin()
+                    best = df.loc[best_idx]
+                    st.metric("Best Time", f"{int(best['time_minutes'])}:{int(best['time_seconds']):02d}")
+                with col2:
+                    first = df.iloc[0]
+                    st.metric("First Attempt", f"{int(first['time_minutes'])}:{int(first['time_seconds']):02d}")
+                with col3:
+                    # Calculate improvement as first time - best time
+                    best_time = df["total_seconds"].min()
+                    first_time = df.iloc[0]['total_seconds']
+                    improvement = first_time - best_time
+                    st.metric("Time Saved", f"-{int(improvement)}s")
         else:
             st.info(f"No data recorded for {workout_for_chart} yet")
     else:
