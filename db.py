@@ -102,7 +102,8 @@ def migrate_json_to_db(user_id: int, weightlifts_file: str = "weightlifts_prs.js
                     ))
                     weightlifts_count += 1
         except (json.JSONDecodeError, IOError) as e:
-            print(f"Error migrating weightlifts: {e}")
+            import logging
+            logging.error(f"Error migrating weightlifts: {e}")
     
     # Migrate benchmarks
     if os.path.exists(benchmarks_file):
@@ -126,7 +127,8 @@ def migrate_json_to_db(user_id: int, weightlifts_file: str = "weightlifts_prs.js
                     ))
                     benchmarks_count += 1
         except (json.JSONDecodeError, IOError) as e:
-            print(f"Error migrating benchmarks: {e}")
+            import logging
+            logging.error(f"Error migrating benchmarks: {e}")
     
     conn.commit()
     conn.close()
@@ -180,6 +182,16 @@ def get_user_by_id(user_id: int) -> Optional[Dict]:
     return None
 
 
+def has_users() -> bool:
+    """Check if any users exist in the database"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count > 0
+
+
 def get_all_users() -> List[Dict]:
     """Get all users (admin only)"""
     conn = get_connection()
@@ -201,7 +213,9 @@ def update_user_password(user_id: int, password_hash: str) -> bool:
         conn.commit()
         conn.close()
         return True
-    except Exception:
+    except sqlite3.Error as e:
+        import logging
+        logging.error(f"Error updating user password: {e}")
         return False
 
 
@@ -214,7 +228,9 @@ def update_user_role(user_id: int, role: str) -> bool:
         conn.commit()
         conn.close()
         return True
-    except Exception:
+    except sqlite3.Error as e:
+        import logging
+        logging.error(f"Error updating user role: {e}")
         return False
 
 
@@ -227,7 +243,9 @@ def delete_user(user_id: int) -> bool:
         conn.commit()
         conn.close()
         return True
-    except Exception:
+    except sqlite3.Error as e:
+        import logging
+        logging.error(f"Error deleting user: {e}")
         return False
 
 
@@ -246,7 +264,9 @@ def add_weightlift_pr(user_id: int, movement: str, weight: float,
         conn.commit()
         conn.close()
         return True
-    except Exception:
+    except sqlite3.Error as e:
+        import logging
+        logging.error(f"Error adding weightlift PR: {e}")
         return False
 
 
@@ -311,7 +331,9 @@ def delete_weightlift_pr(pr_id: int, user_id: int, is_admin: bool = False) -> bo
         conn.commit()
         conn.close()
         return True
-    except Exception:
+    except sqlite3.Error as e:
+        import logging
+        logging.error(f"Error deleting weightlift PR: {e}")
         return False
 
 
@@ -333,7 +355,9 @@ def add_benchmark_pr(user_id: int, workout: str, time_minutes: int,
         conn.commit()
         conn.close()
         return True
-    except Exception:
+    except sqlite3.Error as e:
+        import logging
+        logging.error(f"Error adding benchmark PR: {e}")
         return False
 
 
@@ -404,5 +428,7 @@ def delete_benchmark_pr(pr_id: int, user_id: int, is_admin: bool = False) -> boo
         conn.commit()
         conn.close()
         return True
-    except Exception:
+    except sqlite3.Error as e:
+        import logging
+        logging.error(f"Error deleting benchmark PR: {e}")
         return False

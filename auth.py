@@ -135,9 +135,7 @@ def ensure_default_admin():
     Creates admin/admin account if no users exist
     """
     # Check if any users exist
-    users = db.get_all_users()
-    
-    if not users:
+    if not db.has_users():
         # Create default admin account
         password_hash = hash_password('admin')
         db.create_user('admin', password_hash, role='admin', full_name='Administrator')
