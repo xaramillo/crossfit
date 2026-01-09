@@ -35,6 +35,7 @@ wheels/
 *.json.bak
 weightlifts_prs.json
 benchmarks_prs.json
+crossfit_tracker.db
 
 # OS
 .DS_Store

@@ -1,14 +1,20 @@
+"""
+CrossFit PR Tracker - Multi-User Application with Role-Based Access Control
+"""
 import streamlit as st
 import pandas as pd
-import json
 import os
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 
-# File paths for data storage
-WEIGHTLIFTS_DATA_FILE = "weightlifts_prs.json"
-BENCHMARKS_DATA_FILE = "benchmarks_prs.json"
+# Import custom modules
+import db
+import auth
+
+# Initialize database and ensure default admin exists
+db.init_database()
+auth.ensure_default_admin()
 
 # Define weightlifting movements
 WEIGHTLIFTS = [
@@ -53,102 +59,6 @@ BENCHMARK_WORKOUTS = [
     "King Kong"
 ]
 
-def load_data(filename):
-    """Load data from JSON file"""
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'r') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            st.error(f"Error loading data from {filename}: {e}")
-            return []
-    return []
-
-def save_data(data, filename):
-    """Save data to JSON file"""
-    try:
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
-    except IOError as e:
-        st.error(f"Error saving data to {filename}: {e}")
-
-def add_weightlift_pr(movement, weight, unit, notes=""):
-    """Add a new weightlift PR"""
-    data = load_data(WEIGHTLIFTS_DATA_FILE)
-    # Use max ID + 1 to avoid duplicate IDs
-    max_id = max([entry.get("id", 0) for entry in data], default=0)
-    entry = {
-        "id": max_id + 1,
-        "movement": movement,
-        "weight": weight,
-        "unit": unit,
-        "notes": notes,
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    data.append(entry)
-    save_data(data, WEIGHTLIFTS_DATA_FILE)
-    return True
-
-def add_benchmark_pr(workout, time_minutes, time_seconds, rounds, reps, notes=""):
-    """Add a new benchmark PR"""
-    data = load_data(BENCHMARKS_DATA_FILE)
-    # Use max ID + 1 to avoid duplicate IDs
-    max_id = max([entry.get("id", 0) for entry in data], default=0)
-    entry = {
-        "id": max_id + 1,
-        "workout": workout,
-        "time_minutes": time_minutes,
-        "time_seconds": time_seconds,
-        "rounds": rounds,
-        "reps": reps,
-        "notes": notes,
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    data.append(entry)
-    save_data(data, BENCHMARKS_DATA_FILE)
-    return True
-
-def get_current_prs_weightlifts():
-    """Get current PRs for all weightlifts"""
-    data = load_data(WEIGHTLIFTS_DATA_FILE)
-    if not data:
-        return {}
-    
-    prs = {}
-    for entry in data:
-        movement = entry["movement"]
-        if movement not in prs or entry["weight"] > prs[movement]["weight"]:
-            prs[movement] = entry
-    
-    return prs
-
-def get_current_prs_benchmarks():
-    """Get current PRs (best times) for all benchmarks"""
-    data = load_data(BENCHMARKS_DATA_FILE)
-    if not data:
-        return {}
-    
-    prs = {}
-    for entry in data:
-        workout = entry["workout"]
-        total_seconds = entry["time_minutes"] * 60 + entry["time_seconds"]
-        
-        if workout not in prs:
-            prs[workout] = entry
-        else:
-            current_total = prs[workout]["time_minutes"] * 60 + prs[workout]["time_seconds"]
-            if total_seconds < current_total and total_seconds > 0:
-                prs[workout] = entry
-    
-    return prs
-
-def delete_entry(entry_id, filename):
-    """Delete an entry by ID"""
-    data = load_data(filename)
-    data = [entry for entry in data if entry["id"] != entry_id]
-    save_data(data, filename)
-    return True
-
 # Streamlit App Configuration
 st.set_page_config(
     page_title="CrossFit PR Tracker",
@@ -156,27 +66,242 @@ st.set_page_config(
     layout="wide"
 )
 
-# Main Title
-st.title("🏋️ CrossFit PR Tracker")
-st.markdown("Track your Personal Records for weightlifts and benchmark workouts")
+# Initialize session state
+auth.init_session_state()
 
-# Create tabs for different sections
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Dashboard",
-    "💪 Weightlifts",
-    "⏱️ Benchmarks",
-    "📈 Progress"
-])
 
-# Dashboard Tab
-with tab1:
-    st.header("Your Current PRs")
+def show_login_page():
+    """Display login and registration page"""
+    st.title("🏋️ CrossFit PR Tracker")
+    st.markdown("### Welcome! Please login or register to continue")
+    
+    tab1, tab2 = st.tabs(["Login", "Register"])
+    
+    with tab1:
+        st.subheader("Login")
+        
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Login")
+            
+            if submit:
+                if username and password:
+                    user = auth.login_user(username, password)
+                    if user:
+                        auth.set_authenticated_user(user)
+                        st.success(f"Welcome back, {user['username']}!")
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+                else:
+                    st.error("Please enter both username and password")
+        
+        # Show default admin credentials hint on first run
+        if not db.get_all_users() or len(db.get_all_users()) == 1:
+            st.info("💡 **First time setup**: Default admin credentials are username: `admin`, password: `admin`. Please change the password after logging in!")
+    
+    with tab2:
+        st.subheader("Register New Account")
+        
+        with st.form("register_form"):
+            new_username = st.text_input("Username", key="reg_username")
+            new_password = st.text_input("Password", type="password", key="reg_password")
+            confirm_password = st.text_input("Confirm Password", type="password", key="reg_confirm")
+            full_name = st.text_input("Full Name (optional)", key="reg_fullname")
+            submit_reg = st.form_submit_button("Register")
+            
+            if submit_reg:
+                if new_username and new_password:
+                    if new_password != confirm_password:
+                        st.error("Passwords do not match")
+                    elif len(new_password) < 4:
+                        st.error("Password must be at least 4 characters")
+                    else:
+                        if auth.register_user(new_username, new_password, full_name or None):
+                            st.success("Account created successfully! Please login.")
+                        else:
+                            st.error("Username already exists")
+                else:
+                    st.error("Please enter username and password")
+
+
+def show_user_header():
+    """Display user info and logout button"""
+    user = auth.get_current_user()
+    
+    col1, col2, col3 = st.columns([3, 1, 1])
+    
+    with col1:
+        st.title("🏋️ CrossFit PR Tracker")
+    
+    with col2:
+        display_name = user.get('full_name') or user['username']
+        role_badge = f"[{user['role'].upper()}]"
+        st.markdown(f"**{display_name}** {role_badge}")
+    
+    with col3:
+        if st.button("Logout", key="logout_btn"):
+            auth.logout()
+            st.rerun()
+
+
+def show_user_management():
+    """Display user management interface (admin only)"""
+    if not auth.is_admin():
+        st.error("Access denied. Admin role required.")
+        return
+    
+    st.header("👥 User Management")
+    
+    tab1, tab2, tab3 = st.tabs(["All Users", "Create User", "Migration Tool"])
+    
+    with tab1:
+        st.subheader("All Users")
+        
+        users = db.get_all_users()
+        
+        if users:
+            df = pd.DataFrame(users)
+            st.dataframe(
+                df[['id', 'username', 'role', 'full_name', 'created_at']],
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.markdown("---")
+            st.subheader("Manage User")
+            
+            user_options = [(u['id'], f"{u['username']} ({u['role']})") for u in users]
+            selected_user = st.selectbox(
+                "Select user to manage",
+                options=user_options,
+                format_func=lambda x: x[1]
+            )
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Change Role**")
+                new_role = st.selectbox(
+                    "New role",
+                    options=['user', 'coach', 'admin'],
+                    key="change_role"
+                )
+                
+                if st.button("Update Role"):
+                    if db.update_user_role(selected_user[0], new_role):
+                        st.success(f"Role updated to {new_role}")
+                        st.rerun()
+                    else:
+                        st.error("Failed to update role")
+            
+            with col2:
+                st.markdown("**Delete User**")
+                st.warning("⚠️ This will delete the user and all their data!")
+                
+                if st.button("Delete User", type="secondary"):
+                    if selected_user[0] == auth.get_current_user_id():
+                        st.error("You cannot delete your own account")
+                    else:
+                        if db.delete_user(selected_user[0]):
+                            st.success("User deleted")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete user")
+        else:
+            st.info("No users found")
+    
+    with tab2:
+        st.subheader("Create New User")
+        
+        with st.form("create_user_form"):
+            new_username = st.text_input("Username")
+            new_password = st.text_input("Password", type="password")
+            new_role = st.selectbox("Role", options=['user', 'coach', 'admin'])
+            new_full_name = st.text_input("Full Name (optional)")
+            
+            submit = st.form_submit_button("Create User")
+            
+            if submit:
+                if new_username and new_password:
+                    password_hash = auth.hash_password(new_password)
+                    user_id = db.create_user(
+                        new_username, 
+                        password_hash, 
+                        new_role, 
+                        new_full_name or None
+                    )
+                    
+                    if user_id:
+                        st.success(f"User '{new_username}' created successfully!")
+                    else:
+                        st.error("Username already exists")
+                else:
+                    st.error("Please enter username and password")
+    
+    with tab3:
+        st.subheader("Migrate JSON Data to Database")
+        st.info("This tool migrates existing JSON data files to the database for a specific user.")
+        
+        users = db.get_all_users()
+        if users:
+            user_options = [(u['id'], u['username']) for u in users]
+            selected_user = st.selectbox(
+                "Select user to import data for",
+                options=user_options,
+                format_func=lambda x: x[1],
+                key="migration_user"
+            )
+            
+            weightlifts_file = st.text_input(
+                "Weightlifts JSON file", 
+                value="weightlifts_prs.json"
+            )
+            benchmarks_file = st.text_input(
+                "Benchmarks JSON file", 
+                value="benchmarks_prs.json"
+            )
+            
+            if st.button("Migrate Data"):
+                if os.path.exists(weightlifts_file) or os.path.exists(benchmarks_file):
+                    w_count, b_count = db.migrate_json_to_db(
+                        selected_user[0],
+                        weightlifts_file,
+                        benchmarks_file
+                    )
+                    st.success(f"Migrated {w_count} weightlift PRs and {b_count} benchmark PRs for user {selected_user[1]}")
+                else:
+                    st.error("No JSON files found")
+        else:
+            st.warning("No users available for migration")
+
+
+def show_dashboard():
+    """Display dashboard with current PRs"""
+    st.header("📊 Your Current PRs")
+    
+    user_id = auth.get_current_user_id()
+    
+    # For coach/admin, allow viewing other users' data
+    if auth.can_view_all_data():
+        users = db.get_all_users()
+        user_options = [(u['id'], u.get('full_name') or u['username']) for u in users]
+        
+        selected_user = st.selectbox(
+            "View PRs for user:",
+            options=user_options,
+            format_func=lambda x: x[1],
+            index=[i for i, u in enumerate(user_options) if u[0] == user_id][0] if user_id else 0
+        )
+        
+        user_id = selected_user[0]
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("🏋️ Weightlifting PRs")
-        weightlift_prs = get_current_prs_weightlifts()
+        weightlift_prs = db.get_current_prs_weightlifts(user_id)
         
         if weightlift_prs:
             for movement, pr in sorted(weightlift_prs.items()):
@@ -186,11 +311,11 @@ with tab1:
                     delta=f"Set on {pr['date'][:10]}"
                 )
         else:
-            st.info("No weightlifting PRs recorded yet. Add your first PR in the Weightlifts tab!")
+            st.info("No weightlifting PRs recorded yet.")
     
     with col2:
         st.subheader("⏱️ Benchmark PRs")
-        benchmark_prs = get_current_prs_benchmarks()
+        benchmark_prs = db.get_current_prs_benchmarks(user_id)
         
         if benchmark_prs:
             for workout, pr in sorted(benchmark_prs.items()):
@@ -202,42 +327,81 @@ with tab1:
                     delta=f"Set on {pr['date'][:10]}"
                 )
         else:
-            st.info("No benchmark PRs recorded yet. Add your first PR in the Benchmarks tab!")
+            st.info("No benchmark PRs recorded yet.")
 
-# Weightlifts Tab
-with tab2:
+
+def show_weightlifts():
+    """Display weightlifts tab"""
     st.header("💪 Weightlifting PRs")
+    
+    user_id = auth.get_current_user_id()
+    is_admin = auth.is_admin()
+    can_edit = not auth.is_coach()  # Users and admins can edit
     
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("Add New Weightlifting PR")
-        
-        with st.form("weightlift_form"):
-            movement = st.selectbox("Select Movement", WEIGHTLIFTS)
+        if can_edit:
+            st.subheader("Add New Weightlifting PR")
             
-            col_w1, col_w2 = st.columns(2)
-            with col_w1:
-                weight = st.number_input("Weight", min_value=0.0, step=2.5, format="%.1f")
-            with col_w2:
-                unit = st.selectbox("Unit", ["lbs", "kg"])
+            # For admin, allow adding for any user
+            if is_admin:
+                users = db.get_all_users()
+                user_options = [(u['id'], u.get('full_name') or u['username']) for u in users]
+                selected_user = st.selectbox(
+                    "Add PR for user:",
+                    options=user_options,
+                    format_func=lambda x: x[1],
+                    key="weightlift_add_user"
+                )
+                user_id_for_add = selected_user[0]
+            else:
+                user_id_for_add = user_id
             
-            notes = st.text_area("Notes (optional)", placeholder="e.g., Felt strong today!")
-            
-            submitted = st.form_submit_button("Record PR")
-            
-            if submitted:
-                if weight > 0:
-                    add_weightlift_pr(movement, weight, unit, notes)
-                    st.success(f"✅ Added {weight} {unit} {movement} PR!")
-                    st.rerun()
-                else:
-                    st.error("Please enter a valid weight")
+            with st.form("weightlift_form"):
+                movement = st.selectbox("Select Movement", WEIGHTLIFTS)
+                
+                col_w1, col_w2 = st.columns(2)
+                with col_w1:
+                    weight = st.number_input("Weight", min_value=0.0, step=2.5, format="%.1f")
+                with col_w2:
+                    unit = st.selectbox("Unit", ["lbs", "kg"])
+                
+                notes = st.text_area("Notes (optional)", placeholder="e.g., Felt strong today!")
+                
+                submitted = st.form_submit_button("Record PR")
+                
+                if submitted:
+                    if weight > 0:
+                        db.add_weightlift_pr(user_id_for_add, movement, weight, unit, notes)
+                        st.success(f"✅ Added {weight} {unit} {movement} PR!")
+                        st.rerun()
+                    else:
+                        st.error("Please enter a valid weight")
+        else:
+            st.info("👁️ You have view-only access as a coach")
     
     with col2:
         st.subheader("PR History")
         
-        data = load_data(WEIGHTLIFTS_DATA_FILE)
+        # For coach/admin, allow viewing other users' data
+        if auth.can_view_all_data():
+            users = db.get_all_users()
+            user_options = [(-1, "All Users")] + [(u['id'], u.get('full_name') or u['username']) for u in users]
+            
+            selected_user = st.selectbox(
+                "View PRs for:",
+                options=user_options,
+                format_func=lambda x: x[1],
+                key="weightlift_view_user"
+            )
+            
+            if selected_user[0] == -1:
+                data = db.get_all_weightlifts()
+            else:
+                data = db.get_weightlifts_by_user(selected_user[0])
+        else:
+            data = db.get_weightlifts_by_user(user_id)
         
         if data:
             # Filter by movement
@@ -255,74 +419,129 @@ with tab2:
                 df = pd.DataFrame(filtered_data)
                 df = df.sort_values("date", ascending=False)
                 
-                # Display as table
+                # Display columns based on role
+                if auth.can_view_all_data() and 'username' in df.columns:
+                    display_cols = ["date", "username", "movement", "weight", "unit", "notes"]
+                else:
+                    display_cols = ["date", "movement", "weight", "unit", "notes"]
+                
                 st.dataframe(
-                    df[["date", "movement", "weight", "unit", "notes"]],
+                    df[[col for col in display_cols if col in df.columns]],
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                # Delete functionality
-                st.subheader("Delete Entry")
-                entry_to_delete = st.selectbox(
-                    "Select entry to delete",
-                    options=[(e["id"], f"{e['date']} - {e['movement']} {e['weight']} {e['unit']}") 
-                             for e in filtered_data],
-                    format_func=lambda x: x[1],
-                    key="delete_weightlift"
-                )
-                
-                if st.button("Delete Selected Entry", key="delete_weightlift_btn"):
-                    delete_entry(entry_to_delete[0], WEIGHTLIFTS_DATA_FILE)
-                    st.success("Entry deleted!")
-                    st.rerun()
+                # Delete functionality (user can delete own, admin can delete any)
+                if can_edit and not auth.is_coach():
+                    st.subheader("Delete Entry")
+                    
+                    # Filter deletable entries
+                    if is_admin:
+                        deletable_data = filtered_data
+                    else:
+                        deletable_data = [e for e in filtered_data if e['user_id'] == user_id]
+                    
+                    if deletable_data:
+                        entry_to_delete = st.selectbox(
+                            "Select entry to delete",
+                            options=[(e["id"], f"{e['date']} - {e['movement']} {e['weight']} {e['unit']}") 
+                                     for e in deletable_data],
+                            format_func=lambda x: x[1],
+                            key="delete_weightlift"
+                        )
+                        
+                        if st.button("Delete Selected Entry", key="delete_weightlift_btn"):
+                            db.delete_weightlift_pr(entry_to_delete[0], user_id, is_admin)
+                            st.success("Entry deleted!")
+                            st.rerun()
+                    else:
+                        st.info("No deletable entries")
             else:
                 st.info("No entries found for this filter")
         else:
             st.info("No weightlifting PRs recorded yet")
 
-# Benchmarks Tab
-with tab3:
+
+def show_benchmarks():
+    """Display benchmarks tab"""
     st.header("⏱️ Benchmark Workouts")
+    
+    user_id = auth.get_current_user_id()
+    is_admin = auth.is_admin()
+    can_edit = not auth.is_coach()  # Users and admins can edit
     
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("Add New Benchmark PR")
-        
-        with st.form("benchmark_form"):
-            workout = st.selectbox("Select Workout", BENCHMARK_WORKOUTS)
+        if can_edit:
+            st.subheader("Add New Benchmark PR")
             
-            st.markdown("**Time to Complete**")
-            col_t1, col_t2 = st.columns(2)
-            with col_t1:
-                time_minutes = st.number_input("Minutes", min_value=0, step=1)
-            with col_t2:
-                time_seconds = st.number_input("Seconds", min_value=0, max_value=59, step=1)
+            # For admin, allow adding for any user
+            if is_admin:
+                users = db.get_all_users()
+                user_options = [(u['id'], u.get('full_name') or u['username']) for u in users]
+                selected_user = st.selectbox(
+                    "Add PR for user:",
+                    options=user_options,
+                    format_func=lambda x: x[1],
+                    key="benchmark_add_user"
+                )
+                user_id_for_add = selected_user[0]
+            else:
+                user_id_for_add = user_id
             
-            st.markdown("**For AMRAP workouts (leave at 0 for time-based)**")
-            col_r1, col_r2 = st.columns(2)
-            with col_r1:
-                rounds = st.number_input("Rounds", min_value=0, step=1)
-            with col_r2:
-                reps = st.number_input("Reps", min_value=0, step=1)
-            
-            notes = st.text_area("Notes (optional)", placeholder="e.g., RX or scaled?", key="benchmark_notes")
-            
-            submitted = st.form_submit_button("Record PR")
-            
-            if submitted:
-                if time_minutes > 0 or time_seconds > 0 or rounds > 0:
-                    add_benchmark_pr(workout, time_minutes, time_seconds, rounds, reps, notes)
-                    st.success(f"✅ Added {workout} PR!")
-                    st.rerun()
-                else:
-                    st.error("Please enter valid time or rounds")
+            with st.form("benchmark_form"):
+                workout = st.selectbox("Select Workout", BENCHMARK_WORKOUTS)
+                
+                st.markdown("**Time to Complete**")
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    time_minutes = st.number_input("Minutes", min_value=0, step=1)
+                with col_t2:
+                    time_seconds = st.number_input("Seconds", min_value=0, max_value=59, step=1)
+                
+                st.markdown("**For AMRAP workouts (leave at 0 for time-based)**")
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    rounds = st.number_input("Rounds", min_value=0, step=1)
+                with col_r2:
+                    reps = st.number_input("Reps", min_value=0, step=1)
+                
+                notes = st.text_area("Notes (optional)", placeholder="e.g., RX or scaled?", key="benchmark_notes")
+                
+                submitted = st.form_submit_button("Record PR")
+                
+                if submitted:
+                    if time_minutes > 0 or time_seconds > 0 or rounds > 0:
+                        db.add_benchmark_pr(user_id_for_add, workout, time_minutes, time_seconds, rounds, reps, notes)
+                        st.success(f"✅ Added {workout} PR!")
+                        st.rerun()
+                    else:
+                        st.error("Please enter valid time or rounds")
+        else:
+            st.info("👁️ You have view-only access as a coach")
     
     with col2:
         st.subheader("PR History")
         
-        data = load_data(BENCHMARKS_DATA_FILE)
+        # For coach/admin, allow viewing other users' data
+        if auth.can_view_all_data():
+            users = db.get_all_users()
+            user_options = [(-1, "All Users")] + [(u['id'], u.get('full_name') or u['username']) for u in users]
+            
+            selected_user = st.selectbox(
+                "View PRs for:",
+                options=user_options,
+                format_func=lambda x: x[1],
+                key="benchmark_view_user"
+            )
+            
+            if selected_user[0] == -1:
+                data = db.get_all_benchmarks()
+            else:
+                data = db.get_benchmarks_by_user(selected_user[0])
+        else:
+            data = db.get_benchmarks_by_user(user_id)
         
         if data:
             # Filter by workout
@@ -341,41 +560,73 @@ with tab3:
                 df = df.sort_values("date", ascending=False)
                 df["time"] = df.apply(lambda row: f"{row['time_minutes']}:{row['time_seconds']:02d}", axis=1)
                 
-                # Display as table
-                display_cols = ["date", "workout", "time", "rounds", "reps", "notes"]
+                # Display columns based on role
+                if auth.can_view_all_data() and 'username' in df.columns:
+                    display_cols = ["date", "username", "workout", "time", "rounds", "reps", "notes"]
+                else:
+                    display_cols = ["date", "workout", "time", "rounds", "reps", "notes"]
+                
                 st.dataframe(
-                    df[display_cols],
+                    df[[col for col in display_cols if col in df.columns]],
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                # Delete functionality
-                st.subheader("Delete Entry")
-                entry_to_delete = st.selectbox(
-                    "Select entry to delete",
-                    options=[(e["id"], f"{e['date']} - {e['workout']} {e['time_minutes']}:{e['time_seconds']:02d}") 
-                             for e in filtered_data],
-                    format_func=lambda x: x[1],
-                    key="delete_benchmark"
-                )
-                
-                if st.button("Delete Selected Entry", key="delete_benchmark_btn"):
-                    delete_entry(entry_to_delete[0], BENCHMARKS_DATA_FILE)
-                    st.success("Entry deleted!")
-                    st.rerun()
+                # Delete functionality (user can delete own, admin can delete any)
+                if can_edit and not auth.is_coach():
+                    st.subheader("Delete Entry")
+                    
+                    # Filter deletable entries
+                    if is_admin:
+                        deletable_data = filtered_data
+                    else:
+                        deletable_data = [e for e in filtered_data if e['user_id'] == user_id]
+                    
+                    if deletable_data:
+                        entry_to_delete = st.selectbox(
+                            "Select entry to delete",
+                            options=[(e["id"], f"{e['date']} - {e['workout']} {e['time_minutes']}:{e['time_seconds']:02d}") 
+                                     for e in deletable_data],
+                            format_func=lambda x: x[1],
+                            key="delete_benchmark"
+                        )
+                        
+                        if st.button("Delete Selected Entry", key="delete_benchmark_btn"):
+                            db.delete_benchmark_pr(entry_to_delete[0], user_id, is_admin)
+                            st.success("Entry deleted!")
+                            st.rerun()
+                    else:
+                        st.info("No deletable entries")
             else:
                 st.info("No entries found for this filter")
         else:
             st.info("No benchmark PRs recorded yet")
 
-# Progress Tab
-with tab4:
+
+def show_progress():
+    """Display progress tracking"""
     st.header("📈 Progress Tracking")
+    
+    user_id = auth.get_current_user_id()
+    
+    # For coach/admin, allow viewing other users' data
+    if auth.can_view_all_data():
+        users = db.get_all_users()
+        user_options = [(u['id'], u.get('full_name') or u['username']) for u in users]
+        
+        selected_user = st.selectbox(
+            "View progress for user:",
+            options=user_options,
+            format_func=lambda x: x[1],
+            key="progress_user_select"
+        )
+        
+        user_id = selected_user[0]
     
     # Weightlifts Progress
     st.subheader("Weightlifting Progress")
     
-    weightlift_data = load_data(WEIGHTLIFTS_DATA_FILE)
+    weightlift_data = db.get_weightlifts_by_user(user_id)
     
     if weightlift_data:
         movement_for_chart = st.selectbox(
@@ -422,7 +673,7 @@ with tab4:
     # Benchmarks Progress
     st.subheader("Benchmark Workout Progress")
     
-    benchmark_data = load_data(BENCHMARKS_DATA_FILE)
+    benchmark_data = db.get_benchmarks_by_user(user_id)
     
     if benchmark_data:
         workout_for_chart = st.selectbox(
@@ -482,6 +733,125 @@ with tab4:
     else:
         st.info("No benchmark data recorded yet")
 
-# Footer
-st.markdown("---")
-st.markdown("💪 Keep crushing those PRs! 🏋️")
+
+def show_account_settings():
+    """Display account settings (password change)"""
+    st.header("⚙️ Account Settings")
+    
+    user = auth.get_current_user()
+    
+    st.subheader("User Information")
+    st.write(f"**Username:** {user['username']}")
+    st.write(f"**Role:** {user['role']}")
+    st.write(f"**Full Name:** {user.get('full_name', 'Not set')}")
+    st.write(f"**Account Created:** {user.get('created_at', 'Unknown')}")
+    
+    st.markdown("---")
+    st.subheader("Change Password")
+    
+    with st.form("change_password_form"):
+        old_password = st.text_input("Current Password", type="password")
+        new_password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+        
+        submit = st.form_submit_button("Change Password")
+        
+        if submit:
+            if not old_password or not new_password:
+                st.error("Please fill in all fields")
+            elif new_password != confirm_password:
+                st.error("New passwords do not match")
+            elif len(new_password) < 4:
+                st.error("Password must be at least 4 characters")
+            else:
+                if auth.change_password(user['id'], old_password, new_password):
+                    st.success("Password changed successfully!")
+                else:
+                    st.error("Current password is incorrect")
+
+
+# ==================== Main Application ====================
+
+def main():
+    """Main application logic"""
+    
+    # Check if user is authenticated
+    if not auth.is_authenticated():
+        show_login_page()
+        return
+    
+    # Show user header
+    show_user_header()
+    st.markdown("Track your Personal Records for weightlifts and benchmark workouts")
+    
+    # Create tabs based on user role
+    if auth.is_admin():
+        tabs = st.tabs([
+            "📊 Dashboard",
+            "💪 Weightlifts",
+            "⏱️ Benchmarks",
+            "📈 Progress",
+            "👥 User Management",
+            "⚙️ Settings"
+        ])
+        
+        with tabs[0]:
+            show_dashboard()
+        with tabs[1]:
+            show_weightlifts()
+        with tabs[2]:
+            show_benchmarks()
+        with tabs[3]:
+            show_progress()
+        with tabs[4]:
+            show_user_management()
+        with tabs[5]:
+            show_account_settings()
+    
+    elif auth.is_coach():
+        tabs = st.tabs([
+            "📊 Dashboard",
+            "💪 Weightlifts",
+            "⏱️ Benchmarks",
+            "📈 Progress",
+            "⚙️ Settings"
+        ])
+        
+        with tabs[0]:
+            show_dashboard()
+        with tabs[1]:
+            show_weightlifts()
+        with tabs[2]:
+            show_benchmarks()
+        with tabs[3]:
+            show_progress()
+        with tabs[4]:
+            show_account_settings()
+    
+    else:  # Regular user
+        tabs = st.tabs([
+            "📊 Dashboard",
+            "💪 Weightlifts",
+            "⏱️ Benchmarks",
+            "📈 Progress",
+            "⚙️ Settings"
+        ])
+        
+        with tabs[0]:
+            show_dashboard()
+        with tabs[1]:
+            show_weightlifts()
+        with tabs[2]:
+            show_benchmarks()
+        with tabs[3]:
+            show_progress()
+        with tabs[4]:
+            show_account_settings()
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("💪 Keep crushing those PRs! 🏋️")
+
+
+if __name__ == "__main__":
+    main()
